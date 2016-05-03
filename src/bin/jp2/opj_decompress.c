@@ -1092,10 +1092,10 @@ int plugin_pre_decode_callback(opj_plugin_decode_callback_info_t* info) {
 	/* ---------------------------------------- */
 	if (!l_stream) {
 		// memory mapped stream
-		l_stream = opj_stream_create_mapped_file_read_stream(parameters->infile);
-
-		// other option is to use file stream 
-		//l_stream = opj_stream_create_default_file_stream(parameters->infile, true);
+		if (parameters->decod_format == J2K_CFMT)
+			l_stream = opj_stream_create_mapped_file_read_stream(parameters->infile);
+		else
+			l_stream = opj_stream_create_default_file_stream(parameters->infile, true);
 	}
 
 

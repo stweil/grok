@@ -49,6 +49,8 @@
  * POSSIBILITY OF SUCH DAMAGE.
  */
 
+#include "rtp.h"
+
 #ifdef _WIN32
 #include <windows.h>
 #else /* _WIN32 */
@@ -986,6 +988,8 @@ opj_stream_t* OPJ_CALLCONV opj_stream_create_file_stream (
         return NULL;
     }
 
+
+
     if(p_is_read_stream) mode = "rb";
     else mode = "wb";
 
@@ -1022,7 +1026,38 @@ opj_stream_t* OPJ_CALLCONV opj_stream_create_buffer_stream(uint8_t *buf,
 
 opj_stream_t* OPJ_CALLCONV opj_stream_create_mapped_file_read_stream(const char *fname)
 {
-    return opj_create_mapped_file_read_stream(fname);
+	auto fp = fopen(fname, "rb");
+	fseek(fp, 0L, SEEK_END);
+	size_t original_buf_len = ftell(fp);
+	rewind(fp);
+	uint8_t* original_buf = (uint8_t*)opj_malloc(original_buf_len);
+	fread(original_buf, 1, original_buf_len, fp);
+	fclose(fp);
+	auto res = sim_payload(original_buf, original_buf_len);
+
+	uint8_t* depay_buf;
+	size_t depay_buf_len;
+	sim_depayload(res, &depay_buf, &depay_buf_len);
+
+#ifdef _DEBUG
+	if (depay_buf_len != original_buf_len) {
+		printf("warning: depayloaded data length differs %zu from original data at position length %zu\n", depay_buf_len,original_buf_len);
+	}
+	else {
+		for (size_t k = 0; k < original_buf_len; ++k) {
+			if (depay_buf[k] != original_buf[k]) {
+				printf("warning: depayloaded data differ from original data at position %zu\n", k);
+			}
+		}
+	}
+#endif
+	delete[] original_buf;
+	if (depay_buf)
+		return opj_create_buffer_stream(depay_buf, depay_buf_len, true);
+
+	delete[] depay_buf;
+	return opj_create_buffer_stream(original_buf, original_buf_len, true);
+
 }
 
 

@@ -90,7 +90,14 @@ set(OPENJPEG_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/ThreadPool.h
   ${CMAKE_CURRENT_SOURCE_DIR}/plugin_bridge.h
   ${CMAKE_CURRENT_SOURCE_DIR}/plugin_bridge.cpp
-
+  ${CMAKE_CURRENT_SOURCE_DIR}/rtp-sim.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/rtp-sim.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/rtp.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kpaydepay.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kpay.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kpay.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kdepay.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kdepay.cpp
 )
 
 option(OPJ_DISABLE_TPSOT_FIX "Disable TPsot==TNsot fix. See https://github.com/uclouvain/openjpeg/issues/254." OFF)
