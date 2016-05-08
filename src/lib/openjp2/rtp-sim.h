@@ -116,9 +116,8 @@ struct GstMemory  {
 };
 
 struct GstBuffer : RefCounted {
-	GstBuffer() : len(-1), time_stamp(-1) {}
+	GstBuffer() : time_stamp(-1) {}
 	std::vector<GstMemory> memory;
-	guint64 len;
 	GstClockTime time_stamp;
 
 	size_t unref() {
@@ -239,10 +238,7 @@ struct GstRTPBuffer : RefCounted {
 	}
 	GstBuffer   *buffer;
 	guint        state;
-	gpointer     data[4];
-	gsize        size[4];
-	GstMapInfo   map[4];
-
+	
 	size_t unref() {
 		if (!RefCounted::unref()) {
 			if (!buffer->unref()) {

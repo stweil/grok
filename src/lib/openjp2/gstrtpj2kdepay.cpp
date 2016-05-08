@@ -17,12 +17,21 @@
  * Boston, MA 02110-1301, USA.
  */
 
+ /**
+ * SECTION:element-rtpj2kdepay
+ *
+ * Depayload an RTP-payloaded JPEG 2000 image into RTP packets according to RFC 5371
+ * and RFC 5372.
+ * For detailed information see: https://datatracker.ietf.org/doc/rfc5371/
+ * and https://datatracker.ietf.org/doc/rfc5372/
+ */
+
 #define RTP_J2K_SIM
 
 
 #include "rtp-sim.h"
 #include <assert.h>
-#include "gstrtpj2kpaydepay.h"
+#include "gstrtpj2kcommon.h"
 #include "gstrtpj2kdepay.h"
 
 
@@ -153,10 +162,10 @@ static GstFlowReturn gst_rtp_j2k_depay_flush_tile (GstRTPBaseDepayload * depaylo
       if (map.size < 12)
         goto invalid_tile;
 
-      if (map.data[0] == 0xff && map.data[1] == J2K_MARKER_SOT) {
+      if (map.data[0] == GST_J2K_MARKER && map.data[1] == GST_J2K_MARKER_SOT) {
         guint Psot, nPsot;
 
-        if (end[0] == 0xff && end[1] == J2K_MARKER_EOC)
+        if (end[0] == GST_J2K_MARKER && end[1] == GST_J2K_MARKER_EOC)
           nPsot = avail - 2;
         else
           nPsot = avail;
@@ -232,9 +241,9 @@ static GstFlowReturn gst_rtp_j2k_depay_flush_frame (GstRTPBaseDepayload * depayl
      * marker */
     gst_adapter_copy (rtpj2kdepay->f_adapter, end, avail - 2, 2);
 
-    if (end[0] != 0xff && end[1] != 0xd9) {
-      end[0] = 0xff;
-      end[1] = 0xd9;
+    if (end[0] != GST_J2K_MARKER && end[1] != GST_J2K_MARKER_EOC) {
+      end[0] = GST_J2K_MARKER;
+      end[1] = GST_J2K_MARKER_EOC;
 
       GST_DEBUG_OBJECT (rtpj2kdepay, "no EOC marker, adding one");
 
@@ -287,7 +296,7 @@ static GstBuffer* gst_rtp_j2k_depay_process (GstRTPBaseDepayload * depayload, Gs
   payload_len = gst_rtp_buffer_get_payload_len (rtp);
 
   /* we need at least a header */
-  if (payload_len < HEADER_SIZE)
+  if (payload_len < GST_RTP_J2K_HEADER_SIZE)
     goto empty_packet;
 
   rtptime = gst_rtp_buffer_get_timestamp (rtp);
@@ -318,7 +327,7 @@ static GstBuffer* gst_rtp_j2k_depay_process (GstRTPBaseDepayload * depayload, Gs
 
   tile = (payload[2] << 8) | payload[3];
   frag_offset = (payload[5] << 16) | (payload[6] << 8) | payload[7];
-  j2klen = payload_len - HEADER_SIZE;
+  j2klen = payload_len - GST_RTP_J2K_HEADER_SIZE;
 
   GST_DEBUG_OBJECT (rtpj2kdepay, "MHF %u, tile %u, frag %u, expected %u", MHF,
       tile, frag_offset, rtpj2kdepay->next_frag);
@@ -335,19 +344,19 @@ static GstBuffer* gst_rtp_j2k_depay_process (GstRTPBaseDepayload * depayload, Gs
   }
 
   /* check for sync code */
-  if (j2klen > 2 && payload[HEADER_SIZE] == 0xff) {
-    guint marker = payload[HEADER_SIZE+1];
+  if (j2klen > 2 && payload[GST_RTP_J2K_HEADER_SIZE] == 0xff) {
+    guint marker = payload[GST_RTP_J2K_HEADER_SIZE+1];
 
     /* packets must start with SOC, SOT or SOP */
     switch (marker) {
-      case J2K_MARKER_SOC:
+      case GST_J2K_MARKER_SOC:
         GST_DEBUG_OBJECT (rtpj2kdepay, "found SOC packet");
         /* flush the previous frame, should have happened when the timestamp
          * changed above. */
         gst_rtp_j2k_depay_flush_frame (depayload);
         rtpj2kdepay->have_sync = TRUE;
         break;
-      case J2K_MARKER_SOT:
+      case GST_J2K_MARKER_SOT:
         /* flush the previous tile */
         gst_rtp_j2k_depay_flush_tile (depayload);
         GST_DEBUG_OBJECT (rtpj2kdepay, "found SOT packet");
@@ -355,7 +364,7 @@ static GstBuffer* gst_rtp_j2k_depay_process (GstRTPBaseDepayload * depayload, Gs
         /* we sync on the tile now */
         rtpj2kdepay->last_tile = tile;
         break;
-      case J2K_MARKER_SOP:
+      case GST_J2K_MARKER_SOP:
         GST_DEBUG_OBJECT (rtpj2kdepay, "found SOP packet");
         /* flush the previous PU */
         gst_rtp_j2k_depay_flush_pu (depayload);
@@ -387,7 +396,7 @@ static GstBuffer* gst_rtp_j2k_depay_process (GstRTPBaseDepayload * depayload, Gs
     }
     /* and push in pu adapter */
     GST_DEBUG_OBJECT (rtpj2kdepay, "push pu of size %u in adapter", j2klen);
-    pu_frag = gst_rtp_buffer_get_payload_subbuffer (rtp, HEADER_SIZE, -1);
+    pu_frag = gst_rtp_buffer_get_payload_subbuffer (rtp, GST_RTP_J2K_HEADER_SIZE, -1);
     gst_adapter_push (rtpj2kdepay->pu_adapter, pu_frag);
 
     if (MHF & 2) {

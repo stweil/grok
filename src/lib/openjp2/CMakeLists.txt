@@ -93,7 +93,7 @@ set(OPENJPEG_SRCS
   ${CMAKE_CURRENT_SOURCE_DIR}/rtp-sim.h
   ${CMAKE_CURRENT_SOURCE_DIR}/rtp-sim.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/rtp.h
-  ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kpaydepay.h
+  ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kcommon.h
   ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kpay.h
   ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kpay.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/gstrtpj2kdepay.h

@@ -30,7 +30,7 @@ struct GstRtpJ2KDepay : GstRTPBaseDepayload
 		pu_adapter(new GstAdapter()),
 		t_adapter(new GstAdapter()),
 		f_adapter(new GstAdapter()),
-		next_frag(-1),
+		next_frag(0),
 		have_sync(false)
 	{
 		for (int i = 0; i < 8; ++i)

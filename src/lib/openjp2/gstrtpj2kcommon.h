@@ -25,11 +25,8 @@ typedef enum
 	GST_J2K_MARKER_EOC = 0xD9
 } GstRtpJ2KMarker;
 
-enum
-{
-	PROP_0,
-	PROP_LAST
-};
+
+#define GST_RTP_J2K_HEADER_SIZE 8
 
 
 #endif /* __GST_RTP_J2K_COMMON_H__ */

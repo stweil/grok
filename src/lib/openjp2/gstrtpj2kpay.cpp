@@ -20,19 +20,25 @@
 /**
  * SECTION:element-rtpj2kpay
  *
- * Payload encode JPEG 2000 pictures into RTP packets according to RFC 5371.
- * For detailed information see: http://www.rfc-editor.org/rfc/rfc5371.txt
+ * Payload encode JPEG 2000 images into RTP packets according to RFC 5371
+ * and RFC 5372.
+ * For detailed information see: https://datatracker.ietf.org/doc/rfc5371/
+ * and https://datatracker.ietf.org/doc/rfc5372/ 
  *
- * The payloader takes a JPEG 2000 picture, scans the header for packetization
- * units and constructs the RTP packet header followed by the actual JPEG 2000
- * codestream.
+ * The payloader takes a JPEG 2000 image, scans it for "packetization
+ * units" and constructs the RTP packet header followed by actual JPEG 2000
+ * codestream. A "packetization unit" is defined as either a JPEG 2000 main header,
+ * a tile-part header, or a JPEG 2000 packet.
+ *
+ * The standard recommends that headers be put in their own RTP packets.
+ *
  */
 
 #define RTP_J2K_SIM
 
 
 #include "rtp-sim.h"
-#include "gstrtpj2kpaydepay.h"
+#include "gstrtpj2kcommon.h"
 #include "gstrtpj2kpay.h"
 
 typedef struct
@@ -57,32 +63,40 @@ static guint gst_rtp_j2k_pay_header_size (const guint8 * data, guint offset)
   return data[offset] << 8 | data[offset + 1];
 }
 
-static RtpJ2KMarker gst_rtp_j2k_pay_scan_marker (const guint8 * data, guint size, guint * offset)
+static GstRtpJ2KMarker gst_rtp_j2k_pay_scan_marker (const guint8 * data, guint size, guint * offset)
 {
-  while ((data[(*offset)++] != J2K_MARKER) && ((*offset) < size));
+  while ((data[(*offset)++] != GST_J2K_MARKER) && ((*offset) < size));
 
   if (G_UNLIKELY ((*offset) >= size)) {
-    return J2K_MARKER_EOC;
+    return GST_J2K_MARKER_EOC;
   } else {
     guint8 marker = data[(*offset)++];
-    return (RtpJ2KMarker)marker;
+    return (GstRtpJ2KMarker)marker;
   }
 }
 
 typedef struct
 {
   RtpJ2KHeader header;
+  gboolean multi_tile_part;
   gboolean bitstream;
-  guint n_tiles;
   guint next_sot;
   gboolean force_packet;
 } RtpJ2KState;
 
-static guint find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
-							guint offset, RtpJ2KState * state)
+
+/* Note: The standard recommends that headers be put in their own RTP packets, so we follow
+ * this recommendation in the code. Also, this method groups together all J2K packets
+ * for a tile part and treats this group as a packetization unit. According to the RFC,
+ * only an individual J2K packet is considered a packetization unit.
+ */
+
+static guint
+find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
+    guint offset, RtpJ2KState * state)
 {
   gboolean cut_sop = FALSE;
-  RtpJ2KMarker marker;
+  GstRtpJ2KMarker marker;
 
   /* parse the j2k header for 'start of codestream' */
   GST_LOG_OBJECT (pay, "checking from offset %u", offset);
@@ -92,13 +106,13 @@ static guint find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
     if (state->bitstream) {
       /* parsing bitstream, only look for SOP */
       switch (marker) {
-        case J2K_MARKER_SOP:
+        case GST_J2K_MARKER_SOP:
           GST_LOG_OBJECT (pay, "found SOP at %u", offset);
           if (cut_sop)
             return offset - 2;
           cut_sop = TRUE;
           break;
-        case J2K_MARKER_EPH:
+        case GST_J2K_MARKER_EPH:
           /* just skip over EPH */
           GST_LOG_OBJECT (pay, "found EPH at %u", offset);
           break;
@@ -107,7 +121,7 @@ static guint find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
             GST_LOG_OBJECT (pay, "reached next SOT at %u", offset);
             state->bitstream = FALSE;
             state->force_packet = TRUE;
-            if (marker == J2K_MARKER_EOC && state->next_sot + 2 <= size)
+            if (marker == GST_J2K_MARKER_EOC && state->next_sot + 2 <= size)
               /* include EOC but never go past the max size */
               return state->next_sot + 2;
             else
@@ -117,16 +131,20 @@ static guint find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
       }
     } else {
       switch (marker) {
-        case J2K_MARKER_SOC:
+        case GST_J2K_MARKER_SOC:
           GST_LOG_OBJECT (pay, "found SOC at %u", offset);
-          state->header.MHF = 1;
+          /* start off by assuming that we will fit the entire header
+             into the RTP payload */
+          state->header.MHF = 3;
           break;
-        case J2K_MARKER_SOT:
+        case GST_J2K_MARKER_SOT:
         {
-          guint len, Psot;
+          guint len, Psot, tile;
 
           GST_LOG_OBJECT (pay, "found SOT at %u", offset);
-          /* we found SOT but also had a header first */
+          /* SOT for first tile part in code stream:
+             force close of current RTP packet, so that it
+             only contains main header  */
           if (state->header.MHF) {
             state->force_packet = TRUE;
             return offset - 2;
@@ -140,17 +158,30 @@ static guint find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
           if (offset + len >= size)
             return size;
 
-          if (state->n_tiles == 0)
-            /* first tile, T is valid */
-            state->header.T = 0;
-          else
-            /* more tiles, T becomes invalid */
-            state->header.T = 1;
-          state->header.tile = GST_READ_UINT16_BE (&data[offset + 2]);
-          state->n_tiles++;
+          /* Isot */
+          tile = GST_READ_UINT16_BE (&data[offset + 2]);
 
-          /* get offset of next tile, if it's 0, it goes all the way to the end of
-           * the data */
+          if (!state->multi_tile_part) {
+
+            /* tile is marked as valid */
+            state->header.T = 0;
+
+            /* we have detected multiple tile parts in this rtp packet : tile bit is now invalid */
+            if (state->header.tile != tile) {
+              state->header.T = 1;
+              state->multi_tile_part = TRUE;
+            }
+          }
+          state->header.tile = tile;
+
+          /* Note: Tile parts from multiple tiles in single RTP packet
+             will make T invalid.
+             This cannot happen in our case since we always
+             send tile headers in their own RTP packets, so we cannot mix
+             tile parts in a single RTP packet  */
+
+          /* Psot: offset of next tile. If it's 0, next tile goes all the way
+             to the end of the data */
           Psot = GST_READ_UINT32_BE (&data[offset + 4]);
           if (Psot == 0)
             state->next_sot = size;
@@ -162,10 +193,8 @@ static guint find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
               Psot, state->next_sot);
           break;
         }
-        case J2K_MARKER_SOD:
+        case GST_J2K_MARKER_SOD:
           GST_LOG_OBJECT (pay, "found SOD at %u", offset);
-          /* can't have more tiles now */
-          state->n_tiles = 0;
           /* go to bitstream parsing */
           state->bitstream = TRUE;
           /* cut at the next SOP or else include all data */
@@ -174,7 +203,7 @@ static guint find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
            * spec recommends packing headers separately */
           state->force_packet = TRUE;
           break;
-        case J2K_MARKER_EOC:
+        case GST_J2K_MARKER_EOC:
           GST_LOG_OBJECT (pay, "found EOC at %u", offset);
           return offset;
         default:
@@ -191,8 +220,9 @@ static guint find_pu_end (GstRtpJ2KPay * pay, const guint8 * data, guint size,
   return size;
 }
 
-static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayload,
-													 GstBuffer * buffer)
+static GstFlowReturn
+gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayload,
+    GstBuffer * buffer)
 {
   GstRtpJ2KPay *pay;
   GstClockTime timestamp;
@@ -212,24 +242,25 @@ static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayl
   offset = pos = end = 0;
 
   GST_LOG_OBJECT (pay,
-      "got buffer size %llu, timestamp %llu",
+      "got buffer size %" G_GSIZE_FORMAT ", timestamp %" GST_TIME_FORMAT,
       map.size, GST_TIME_ARGS (timestamp));
 
   /* do some header defaults first */
   state.header.tp = 0;          /* only progressive scan */
   state.header.MHF = 0;         /* no header */
   state.header.mh_id = 0;       /* always 0 for now */
-  state.header.T = 1;           /* invalid tile */
+  state.header.T = 1;           /* invalid tile, because we always begin with the main header */
   state.header.priority = 255;  /* always 255 for now */
-  state.header.tile = 0;        /* no tile number */
+  state.header.tile = -1;       /* no tile number */
   state.header.offset = 0;      /* offset of 0 */
+  state.multi_tile_part = FALSE;
   state.bitstream = FALSE;
-  state.n_tiles = 0;
   state.next_sot = 0;
   state.force_packet = FALSE;
 
   /* get max packet length */
-  max_size = gst_rtp_buffer_calc_payload_len (mtu - HEADER_SIZE, 0, 0);
+  max_size =
+      gst_rtp_buffer_calc_payload_len (mtu - GST_RTP_J2K_HEADER_SIZE, 0, 0);
 
   list = gst_buffer_list_new_sized ((mtu / max_size) + 1);
 
@@ -238,11 +269,7 @@ static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayl
     guint8 *header;
     guint payload_size;
     guint pu_size;
-#ifdef RTP_J2K_SIM
-	GstRTPBuffer rtp;
-#else
-    GstRTPBuffer rtp = { NULL };
-#endif
+    GstRTPBuffer rtp;
 
     /* try to pack as much as we can */
     do {
@@ -279,7 +306,7 @@ static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayl
         break;
 
       /* scan next packetization unit and fill in the header */
-      end = find_pu_end (pay, map.data, (guint)map.size, pos, &state);
+      end = find_pu_end (pay, map.data, map.size, pos, &state);
     } while (TRUE);
 
     while (pu_size > 0) {
@@ -288,7 +315,8 @@ static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayl
 
       /* calculate the packet size */
       packet_size =
-          gst_rtp_buffer_calc_packet_len (pu_size + HEADER_SIZE, 0, 0);
+          gst_rtp_buffer_calc_packet_len (pu_size + GST_RTP_J2K_HEADER_SIZE, 0,
+          0);
 
       if (packet_size > mtu) {
         GST_DEBUG_OBJECT (pay, "needed packet size %u clamped to MTU %u",
@@ -301,10 +329,10 @@ static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayl
 
       /* get total payload size and data size */
       payload_size = gst_rtp_buffer_calc_payload_len (packet_size, 0, 0);
-      data_size = payload_size - HEADER_SIZE;
+      data_size = payload_size - GST_RTP_J2K_HEADER_SIZE;
 
       /* make buffer for header */
-      outbuf = gst_rtp_buffer_new_allocate (HEADER_SIZE, 0, 0);
+      outbuf = gst_rtp_buffer_new_allocate (GST_RTP_J2K_HEADER_SIZE, 0, 0);
 
       GST_BUFFER_PTS (outbuf) = timestamp;
 
@@ -314,18 +342,26 @@ static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayl
       header = gst_rtp_buffer_get_payload (&rtp);
 
       pu_size -= data_size;
-      if (pu_size == 0) {
-        /* reached the end of a packetization unit */
-        if (state.header.MHF) {
-          /* we were doing a header, see if all fit in one packet or if
-           * we had to fragment it */
-          if (offset == 0)
-            state.header.MHF = 3;
-          else
-            state.header.MHF = 2;
+
+      /* reached the end of a packetization unit */
+      if (pu_size == 0 && end >= map.size) {
+        gst_rtp_buffer_set_marker (&rtp, TRUE);
+      }
+      /* If we were processing a header, see if all fits in one RTP packet
+         or if we have to fragment it */
+      if (state.header.MHF) {
+        switch (state.header.MHF) {
+          case 3:
+            if (pu_size > 0)
+              state.header.MHF = 1;
+            break;
+          case 1:
+            if (pu_size == 0)
+              state.header.MHF = 2;
+            break;
+          default:
+            break;
         }
-        if (end >= map.size)
-          gst_rtp_buffer_set_marker (&rtp, TRUE);
       }
 
       /*
@@ -362,18 +398,26 @@ static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayl
       /* make subbuffer of j2k data */
       paybuf = gst_buffer_copy_region (buffer, GST_BUFFER_COPY_ALL,
           offset, data_size);
-#ifndef RTP_J2K_SIM
+ /*
       gst_rtp_copy_meta (GST_ELEMENT_CAST (basepayload), outbuf, paybuf,
           g_quark_from_static_string (GST_META_TAG_VIDEO_STR));
-#endif
+  */
       outbuf = gst_buffer_append (outbuf, paybuf);
 
       gst_buffer_list_add (list, outbuf);
 
-      /* reset header for next round */
-      state.header.MHF = 0;
-      state.header.T = 1;
-      state.header.tile = 0;
+      /* reset multi_tile */
+      state.multi_tile_part = FALSE;
+
+
+      /* set MHF to zero if there is no more main header to process */
+      if (state.header.MHF & 2)
+        state.header.MHF = 0;
+
+      /* tile is valid, if there is no more header to process */
+      if (!state.header.MHF)
+        state.header.T = 0;
+
 
       offset += data_size;
       state.header.offset = offset;
@@ -388,7 +432,6 @@ static GstFlowReturn gst_rtp_j2k_pay_handle_buffer (GstRTPBasePayload * basepayl
 
   return ret;
 }
-
 
 void* sim_payload(uint8_t* buffer, size_t len) {
 	printf("Simulate Payload\n\n");
