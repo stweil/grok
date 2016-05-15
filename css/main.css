@@ -15,8 +15,19 @@ html, body {
 body {
     padding-top: 50px;
     padding-bottom: 20px;
-    background: url("../img/header.jpg") no-repeat center cover;
+  position: relative;
+  width: 100%;
+  min-height: auto;
+  -webkit-background-size: cover;
+  -moz-background-size: cover;
+  background-size: cover;
+  -o-background-size: cover;
+  background-position: center;
+  background-image: url('../img/header.jpg');
+  text-align: center;
+  color: white;
 }
+
 
 
 .dropdown {
