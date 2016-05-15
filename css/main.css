@@ -15,7 +15,9 @@ html, body {
 body {
     padding-top: 50px;
     padding-bottom: 20px;
+    background: url("img/header.jpg") no-repeat center cover;
 }
+
 
 .dropdown {
     cursor:pointer;
